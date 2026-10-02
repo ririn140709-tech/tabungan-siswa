@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+@theme {
+  /* Navy / Deep Blue */
+  --color-navy-950: #050d1f;
+  --color-navy-900: #0a1730;
+  --color-navy-800: #102347;
+  --color-navy-700: #17315f;
+  --color-navy-600: #1e3f7a;
+
+  /* Gold accent */
+  --color-gold-600: #a17f1a;
+  --color-gold-500: #c9a227;
+  --color-gold-400: #d9b441;
+  --color-gold-300: #e7c968;
+  --color-gold-200: #f0dda3;
+  --color-gold-100: #f8f0d9;
+
+  /* Display font (serif elegan) */
+  --font-display: var(--font-playfair, "Playfair Display"), Georgia, serif;
+
+  /* Animations */
+  --animate-fade-up: fade-up 0.8s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-fade-up-1: fade-up 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.12s both;
+  --animate-fade-up-2: fade-up 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.26s both;
+  --animate-fade-up-3: fade-up 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.4s both;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    font-family:
+      var(--font-plus-jakarta), ui-sans-serif, system-ui, -apple-system,
+      "Segoe UI", sans-serif;
+    background-color: #f4f6fa;
+    color: var(--color-navy-900);
+  }
+
+  ::selection {
+    background: var(--color-gold-300);
+    color: var(--color-navy-950);
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_12px_28px_-18px_rgba(15,23,42,0.25)];
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-navy-900 outline-none transition placeholder:text-slate-400 focus:border-gold-400 focus:ring-4 focus:ring-gold-400/15;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-navy-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-navy-800 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-navy-900/25 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .btn-gold {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-gold-300 to-gold-500 px-4 py-2.5 text-sm font-bold text-navy-950 shadow-sm shadow-gold-500/25 transition hover:brightness-105 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-gold-400/40 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .btn-outline {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-navy-800 transition hover:border-gold-400 hover:text-gold-600 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-gold-400/20 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/20;
+  }
+
+  .alert-error {
+    @apply rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-sm font-medium text-rose-700;
+  }
+
+  .alert-success {
+    @apply rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-sm font-medium text-emerald-700;
+  }
+
+  .label {
+    @apply mb-1.5 block text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500;
+  }
+
+  .badge-absen {
+    @apply grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-navy-900 text-sm font-bold text-gold-300;
+  }
+
+  .th {
+    @apply px-4 py-3 text-left text-[11px] font-bold uppercase tracking-[0.1em] text-slate-500;
+  }
+}
