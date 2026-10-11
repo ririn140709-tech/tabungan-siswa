@@ -26,22 +26,35 @@ npm start
 ## Deploy (Vercel)
 
 Aplikasi live di Vercel: **https://tabungan-siswa-azure.vercel.app**
+Terhubung ke GitHub (`ririn140709-tech/tabungan-siswa`) — **setiap push ke
+`master` di-deploy otomatis** oleh Vercel (GitHub App terpasang).
 
 Penyimpanan menyesuaikan lingkungan:
 
 - **Lokal (dev)** — file `data/db.json` seperti biasa.
-- **Di Vercel** — data disimpan di **Vercel Blob** (store
-  `tabungan-siswa-data`, dokumen `data/db.json`), otomatis aktif saat
-  `VERCEL_ENV` + `BLOB_READ_WRITE_TOKEN` tersedia. Setiap tulis memakai
-  ETag kondisional (`ifMatch`) + retry agar aman dari tabrakan antar-instance
+- **Di Vercel** — data disimpan di **Cloud Firestore**
+  (project `tabungan-siswa-sekolah-aeff0`, dokumen `app/db` berbentuk
+  `{ data, etag }`), otomatis aktif saat `VERCEL_ENV` + kredensial
+  `FIREBASE_PROJECT_ID` / `FIREBASE_CLIENT_EMAIL` / `FIREBASE_PRIVATE_KEY`
+  tersedia. Setiap mutasi memakai **transaksi Firestore** (baca–ubah–tulis
+  atomik) dengan deteksi konflik, aman dari tabrakan antar-instance
   serverless.
+- **Uji jalur Firestore secara lokal** — set `FIREBASE_FORCE=1` di
+  `.env.local` (hapus lagi setelah selesai agar data uji tidak bercampur).
 - **Sesi PIN** — memakai env `SESSION_SECRET` (Production & Preview).
 
-Deploy ulang setelah perubahan kode:
+Perubahan kode cukup di-push, deploy jalan sendiri:
 
 ```bash
-npx vercel deploy --prod
+git add -A && git commit -m "pesan" && git push
 ```
+
+Script utilitas data (sekali jalan / diagnostik):
+
+- `node scripts/migrate-blob-firestore.mjs` — salin data Vercel Blob →
+  Firestore (butuh `vercel env pull --environment production` ke
+  `.env.migrate`).
+- `node scripts/inspect-db.mjs` — bandingkan isi Firestore vs file lokal.
 
 ## Alur Aplikasi
 
@@ -63,8 +76,9 @@ npx vercel deploy --prod
 - Semua Server Action memeriksa ulang sesi + validasi input (nominal, tanggal,
   keterangan) di server.
 - Login salah dibatasi: 5 kali gagal → terkunci 30 detik.
-- Data disimpan di server pada folder `data/` (bukan di browser), sehingga
-  aman dari utak-atik lewat DevTools.
+- Data disimpan di **server** (file `data/` saat lokal, **Cloud Firestore**
+  saat produksi — bukan di browser), sehingga aman dari utak-atik lewat
+  DevTools.
 
 ## Fitur
 
@@ -89,10 +103,14 @@ npx vercel deploy --prod
 
 ## Struktur Data
 
-- `data/db.json` — database JSON (dibuat otomatis saat pertama dijalankan,
-  berisi contoh data: 4 kelas × 45 siswa, 12 guru, dan beberapa transaksi
-  contoh).
-- `data/secret.key` — rahasia penanda tangan sesi (dibuat otomatis).
+- **Cloud Firestore (produksi)** — dokumen `app/db` berbentuk
+  `{ data: <isi DB>, etag: <penanda versi> }` di project
+  `tabungan-siswa-sekolah-aeff0`.
+- `data/db.json` — database JSON **lokal** (dibuat otomatis saat pertama
+  dijalankan, berisi contoh data: 4 kelas × 45 siswa, 12 guru, dan beberapa
+  transaksi contoh).
+- `data/secret.key` — rahasia penanda tangan sesi saat lokal (dibuat
+  otomatis).
 
 > Untuk mengembalikan ke data contoh: hentikan server, hapus folder `data/`,
 > lalu jalankan ulang.
