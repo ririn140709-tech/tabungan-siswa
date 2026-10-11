@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { get, put, BlobPreconditionFailedError } from "@vercel/blob";
+import { initializeApp, getApps, cert, type App } from "firebase-admin/app";
+import { getFirestore, type Firestore } from "firebase-admin/firestore";
 import { hashPin } from "./crypto";
 import { createSeed } from "./seed";
 import type { DB } from "./types";
@@ -14,21 +15,29 @@ const DATA_DIR = path.join(process.cwd(), "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 const SECRET_FILE = path.join(DATA_DIR, "secret.key");
 
-/** Lokasi dokumen DB di Vercel Blob (dipakai saat berjalan di Vercel). */
-const BLOB_PATH = "data/db.json";
+/**
+ * Lokasi dokumen DB di Cloud Firestore — seluruh data sekolah (kelas,
+ * siswa, transaksi, PIN) tersimpan dalam SATU dokumen: `app/db` dengan
+ * bentuk `{ data: DB, etag: string }`. Skala sekolah jauh di bawah batas
+ * 1 MB/dokumen, dan satu dokumen membuat baca-tulis-ubah jadi atomik.
+ */
+const FIRESTORE_DOC = "app/db";
 
 /**
- * Penyimpanan cloud (Vercel Blob) aktif hanya saat berjalan DI Vercel
- * (VERCEL_ENV ter-set oleh platform). Lokal selalu memakai file
- * `data/db.json` agar data uji tidak bercampur dengan data produksi.
+ * Penyimpanan cloud (Cloud Firestore) aktif saat kredensial service
+ * account ter-set DAN berjalan di Vercel (VERCEL_ENV ter-set oleh
+ * platform). Lokal selalu memakai file `data/db.json` agar data uji tidak
+ * bercampur dengan data produksi — kecuali FIREBASE_FORCE=1 untuk
+ * menguji jalur Firestore secara lokal.
  */
-function pakaiBlob(): boolean {
-  return (
-    Boolean(process.env.VERCEL_ENV) &&
-    Boolean(
-      process.env.BLOB_STORE_ID || process.env.BLOB_READ_WRITE_TOKEN,
-    )
+function pakaiFirebase(): boolean {
+  const adaKredensial = Boolean(
+    process.env.FIREBASE_PROJECT_ID &&
+      process.env.FIREBASE_CLIENT_EMAIL &&
+      process.env.FIREBASE_PRIVATE_KEY,
   );
+  if (!adaKredensial) return false;
+  return Boolean(process.env.VERCEL_ENV) || process.env.FIREBASE_FORCE === "1";
 }
 
 export function scopeKelas(idKelas: string): string {
@@ -60,45 +69,78 @@ function bacaFile(): DB | null {
 }
 
 /* ------------------------------------------------------------------ */
-/* Backend Vercel Blob (produksi)                                     */
+/* Backend Cloud Firestore (produksi)                                 */
 /* ------------------------------------------------------------------ */
 
-async function bacaBlob(): Promise<{ db: DB; etag: string } | null> {
-  const hasil = await get(BLOB_PATH, {
-    access: "private",
-    useCache: false, // selalu baca versi terbaru
-  });
-  if (!hasil || hasil.statusCode !== 200 || !hasil.stream) return null;
-  const teks = await new Response(hasil.stream).text();
-  try {
-    return { db: JSON.parse(teks) as DB, etag: etagKuat(hasil.blob.etag) };
-  } catch {
-    return null; // korup → seed baru
+/** Isi dokumen `app/db`: data DB + etag untuk deteksi konflik tulis. */
+type DokumenFirestore = { data: DB; etag: string };
+
+/** Error internal ketika tulis bersyarat kalah saing (etag tidak cocok). */
+class KonflikFirebase extends Error {
+  constructor() {
+    super("konflik tulis firestore");
   }
-}
-
-async function tulisBlob(db: DB, etag?: string) {
-  await put(BLOB_PATH, JSON.stringify(db, null, 2), {
-    access: "private",
-    contentType: "application/json",
-    allowOverwrite: true,
-    ...(etag ? { ifMatch: etag } : {}),
-  });
-}
-
-/**
- * `get()` mengembalikan etag lemah (`W/"…"`) yang selalu ditolak oleh
- * `If-Match` (harus etag kuat) — buang prefix `W/`-nya.
- */
-function etagKuat(e: string): string {
-  return e.replace(/^W\//, "");
 }
 
 function konflik(err: unknown): boolean {
   return (
-    err instanceof BlobPreconditionFailedError ||
-    (err instanceof Error && /precondition failed/i.test(err.message))
+    err instanceof KonflikFirebase ||
+    (err instanceof Error && /aborted|precondition/i.test(err.message))
   );
+}
+
+let appFirebase: App | null = null;
+let firestoreSingleton: Firestore | null = null;
+
+function firestore(): Firestore {
+  if (!firestoreSingleton) {
+    appFirebase =
+      getApps()[0] ??
+      initializeApp({
+        credential: cert({
+          projectId: process.env.FIREBASE_PROJECT_ID!,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY!.replace(
+            /\\n/g,
+            "\n",
+          ),
+        }),
+      });
+    firestoreSingleton = getFirestore(appFirebase);
+  }
+  return firestoreSingleton;
+}
+
+function etagBaru(): string {
+  return randomBytes(8).toString("hex");
+}
+
+async function bacaFirestore(): Promise<DokumenFirestore | null> {
+  const snap = await firestore().doc(FIRESTORE_DOC).get();
+  if (!snap.exists) return null;
+  const isi = snap.data() as DokumenFirestore | undefined;
+  if (!isi || typeof isi.data !== "object" || isi.data === null) return null;
+  return isi;
+}
+
+/**
+ * Tulis dokumen lewat transaksi Firestore.
+ * - `etag` diberikan → tulis bersyarat: gagal (KonflikFirebase) bila isi
+ *   dokumen sudah diubah orang lain sejak terakhir dibaca.
+ * - tanpa `etag` → tulis mutlak (dipakai saat membuat seed baru).
+ */
+async function tulisFirestore(db: DB, etag?: string) {
+  await firestore().runTransaction(async (tx) => {
+    const ref = firestore().doc(FIRESTORE_DOC);
+    const snap = await tx.get(ref);
+    if (etag !== undefined) {
+      const etagKini = snap.exists
+        ? (snap.data() as DokumenFirestore).etag
+        : null;
+      if (etagKini !== etag) throw new KonflikFirebase();
+    }
+    tx.set(ref, { data: db, etag: etagBaru() } satisfies DokumenFirestore);
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -128,25 +170,25 @@ function dbBaru(): DB {
   return db;
 }
 
-/** Baca dokumen DB (file lokal atau Vercel Blob — tergantung lingkungan). */
+/** Baca dokumen DB (file lokal atau Firestore — tergantung lingkungan). */
 export async function bacaDB(): Promise<DB> {
-  if (pakaiBlob()) {
-    const hasil = await bacaBlob();
+  if (pakaiFirebase()) {
+    const hasil = await bacaFirestore();
     if (!hasil) {
       const db = dbBaru();
-      await tulisBlob(db);
+      await tulisFirestore(db);
       return db;
     }
-    if (lengkapiPinDefault(hasil.db)) {
+    if (lengkapiPinDefault(hasil.data)) {
       // Tulis bersyarat; bila kalah saing biarkan saja — instance lain sudah
       // mengisi PIN default yang sama.
       try {
-        await tulisBlob(hasil.db, hasil.etag);
+        await tulisFirestore(hasil.data, hasil.etag);
       } catch (err) {
         if (!konflik(err)) throw err;
       }
     }
-    return hasil.db;
+    return hasil.data;
   }
 
   const db = bacaFile();
@@ -172,16 +214,23 @@ export function mutasi<T>(fn: (db: DB) => T): Promise<T> {
 const MAKS_ULANG_KONFLIK = 5;
 
 async function jalankanMutasi<T>(fn: (db: DB) => T): Promise<T> {
-  if (pakaiBlob()) {
-    // Optimistic concurrency: baca etag → ubah → tulis bersyarat.
-    // Bila ada yang menulis di antaranya, ETag beda → ulangi dengan data terbaru.
+  if (pakaiFirebase()) {
+    // Transaksi Firestore: baca → ubah → tulis atomik. Bila ada penulis
+    // lain di antaranya, SDK mengulang transaksi otomatis dengan data
+    // terbaru; loop ini menjaga batas wajar plus pesan yang ramah.
     for (let i = 0; i < MAKS_ULANG_KONFLIK; i++) {
-      const awal = await bacaBlob();
-      const db = awal ? awal.db : dbBaru();
-      const hasil = fn(db);
       try {
-        await tulisBlob(db, awal?.etag);
-        return hasil;
+        let hasil: T | undefined;
+        await firestore().runTransaction(async (tx) => {
+          const ref = firestore().doc(FIRESTORE_DOC);
+          const snap = await tx.get(ref);
+          const db = snap.exists
+            ? (snap.data() as DokumenFirestore).data
+            : dbBaru();
+          hasil = fn(db);
+          tx.set(ref, { data: db, etag: etagBaru() } satisfies DokumenFirestore);
+        });
+        return hasil as T;
       } catch (err) {
         if (!konflik(err)) throw err;
       }
